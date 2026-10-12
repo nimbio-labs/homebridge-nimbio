@@ -82,6 +82,9 @@ export class NimbioPlatform implements DynamicPlatformPlugin {
     const config = this.config;
     if (!config || this.stopped) return;
     this.log.info(`Nimbio plugin ${VERSION} starting (${config.environment})`);
+    // Until the key is confirmed, cached tiles must not look usable: with no
+    // handlers HomeKit would accept "open" and silently do nothing.
+    this.markCachedUnavailable();
 
     const client = (this.deps.createClient ?? ((k, o) => new NimbioClient(k, o)))(config.apiKey, {
       environment: config.environment,
@@ -94,11 +97,16 @@ export class NimbioPlatform implements DynamicPlatformPlugin {
     const store = new StateStore();
     try {
       session = resolveSession(await client.me());
+      if (this.stopped) return;
       this.log.info(describeSession(session));
       gates = excludeLatches(await this.loadInventory(client, session, store), config.excludeLatchIds);
+      // Shutdown may have arrived during the reads; build nothing after it.
+      if (this.stopped) return;
     } catch (e) {
+      if (this.stopped) return;
       if (e instanceof AuthenticationError) {
-        // Keep cached accessories: rooms, names and automations survive a key fix.
+        // Keep cached accessories (rooms, names and automations survive a key
+        // fix); they stay "No Response" rather than pretending to work.
         this.log.error("Nimbio rejected the API key. Check it in the plugin settings, then restart Homebridge.");
         return;
       }
@@ -127,7 +135,29 @@ export class NimbioPlatform implements DynamicPlatformPlugin {
         gateStatus: session.gateStatus,
         holdOpens,
       });
-      await this.live.start();
+      // loadInventory already read (and seeded) gate status when it could.
+      await this.live.start({ gateStatusSeeded: session.gateStatus });
+    }
+  }
+
+  /**
+   * Make every cached accessory report "No Response" for reads and writes.
+   * Real handlers, attached once the key is confirmed, replace these.
+   */
+  private markCachedUnavailable(): void {
+    const { Service, HapStatusError, HAPStatus } = this.api.hap;
+    const fail = () => {
+      throw new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    };
+    for (const accessory of this.cached.values()) {
+      for (const service of accessory.services) {
+        if (service instanceof Service.AccessoryInformation) continue;
+        for (const ch of service.characteristics) {
+          if (ch.UUID === this.api.hap.Characteristic.Name.UUID) continue;
+          ch.onGet(fail);
+          ch.onSet(fail);
+        }
+      }
     }
   }
 

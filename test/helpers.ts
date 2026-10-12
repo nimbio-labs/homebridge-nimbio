@@ -108,3 +108,18 @@ export function makeStream() {
 
 /** Let pending promise callbacks and setImmediate run. */
 export const flush = () => new Promise<void>((r) => setImmediate(r));
+
+/**
+ * A stream event in the shape the SDK really yields: `data` is the whole
+ * webhook envelope and `payload` is its inner `data`. (Getting this wrong in
+ * tests is how the plugin once read the envelope and ignored every event.)
+ */
+export function streamEvent(type: string, payload: Record<string, unknown>, id = "1") {
+  return {
+    kind: "event" as const,
+    id,
+    type,
+    data: { event: type, id: `evt_${id}`, community_id: "c1", occurred_at: "2026-10-12T00:00:00Z", data: payload },
+    payload,
+  };
+}

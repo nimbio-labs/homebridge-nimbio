@@ -9,7 +9,7 @@ import { DOOR, LOCK, TARGET } from "../src/doorState.js";
 import type { GateSpec } from "../src/inventory.js";
 import { OPEN_NOTE, Opener } from "../src/opener.js";
 import { StateStore } from "../src/state.js";
-import { FakeAccessory, flush, latch, makeApi, makeConfig, makeLog, openResult } from "./helpers.js";
+import { FakeAccessory, flush, latch, makeApi, makeConfig, makeLog, openResult, streamEvent } from "./helpers.js";
 
 const { Characteristic: C, Service: S } = hap;
 
@@ -139,7 +139,7 @@ describe("GateAccessory — sensed", () => {
     expect(svc.getCharacteristic(C.CurrentDoorState).value).toBe(DOOR.CLOSED);
 
     const emit = (status_label: string) =>
-      store.applyEvent({ kind: "event", id: "1", type: "sense_line.changed", data: { latch_id: "L1", status_label }, payload: {} });
+      store.applyEvent(streamEvent("sense_line.changed", { latch_id: "L1", status_label }));
     emit("Moving");
     expect(svc.getCharacteristic(C.CurrentDoorState).value).toBe(DOOR.OPENING);
     emit("Open");
@@ -197,7 +197,7 @@ describe("LockAccessory", () => {
     await flush();
     expect(client.community.open).toHaveBeenCalledWith("L2", expect.anything());
 
-    store.applyEvent({ kind: "event", id: "1", type: "sense_line.changed", data: { latch_id: "L2", status_label: "Unlocked" }, payload: {} });
+    store.applyEvent(streamEvent("sense_line.changed", { latch_id: "L2", status_label: "Unlocked" }));
     expect(svc.getCharacteristic(C.LockCurrentState).value).toBe(LOCK.UNSECURED);
 
     await svc.getCharacteristic(C.LockTargetState).handleSetRequest(LOCK.SECURED);
@@ -247,7 +247,7 @@ describe("HoldOpenAccessory", () => {
     expect(store.get("L1")?.manualHoldOpen).toBe(true);
 
     // A scheduled window holding it open does not turn the manual switch on.
-    store.applyEvent({ kind: "event", id: "2", type: "hold_open.changed", data: { latch_id: "L1", held_open: true, manual: false }, payload: {} });
+    store.applyEvent(streamEvent("hold_open.changed", { latch_id: "L1", held_open: true, manual: false }, "2"));
     expect(on.value).toBe(false);
     h.dispose();
   });

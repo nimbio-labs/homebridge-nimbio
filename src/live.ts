@@ -21,7 +21,16 @@ export interface LiveOptions {
   streamRetryMs?: number;
   /** Full re-read cadence while the stream is healthy — a safety net, not the feed. */
   safetyResyncMs?: number;
+  /**
+   * A stream attempt that has not failed after this long is treated as
+   * connected (the SDK yields nothing until an event arrives, so there is no
+   * explicit on-connect signal). Polling stops then.
+   */
+  streamHealthyMs?: number;
 }
+
+/** Ceiling for the stream retry backoff after repeated refusals. */
+export const MAX_STREAM_RETRY_MS = 15 * 60_000;
 
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
@@ -44,6 +53,8 @@ export class LiveUpdater {
   private pollTimer: NodeJS.Timeout | undefined;
   private safetyTimer: NodeJS.Timeout | undefined;
   private failures = 0;
+  /** Consecutive stream attempts that failed; 0 while the stream is healthy. */
+  private streamFailures = 0;
   private stopped = false;
 
   constructor(
@@ -53,8 +64,14 @@ export class LiveUpdater {
     private readonly opts: LiveOptions,
   ) {}
 
-  async start(): Promise<void> {
-    await this.seed();
+  /**
+   * Seed, then start the feed. Pass `gateStatusSeeded` when the caller has just
+   * read gate status itself (the inventory read), so it is not read twice.
+   */
+  async start(opts: { gateStatusSeeded?: boolean } = {}): Promise<void> {
+    await this.seed({ gateStatus: !opts.gateStatusSeeded });
+    // stop() may have run while the seed was in flight (shutdown during startup).
+    if (this.stopped) return;
     if (this.opts.liveUpdates === "polling") {
       this.log.info(`Live updates: polling every ${this.opts.pollSeconds}s`);
       this.startPolling();
@@ -72,9 +89,11 @@ export class LiveUpdater {
   }
 
   /** Re-read everything this key can see. Never throws. */
-  async seed(): Promise<boolean> {
+  async seed(parts: { gateStatus?: boolean } = {}): Promise<boolean> {
     try {
-      if (this.opts.gateStatus) this.store.seedGateStatus(await this.client.community.gateStatus());
+      if (this.opts.gateStatus && parts.gateStatus !== false) {
+        this.store.seedGateStatus(await this.client.community.gateStatus());
+      }
       if (this.opts.holdOpens) this.store.seedHoldOpens(await this.client.community.holdOpens());
       if (this.failures > 0) this.log.info("Nimbio status reads recovered");
       this.failures = 0;
@@ -92,12 +111,15 @@ export class LiveUpdater {
   private async runStream(): Promise<void> {
     const signal = this.abort.signal;
     while (!this.stopped) {
+      // The SDK connects lazily and yields nothing until an event arrives, so an
+      // attempt that survives `streamHealthyMs` without an HTTP refusal counts
+      // as connected: stop the fallback polling and end any outage.
+      const healthy = setTimeout(() => this.markStreamHealthy(), this.opts.streamHealthyMs ?? 15_000);
       try {
-        // The SDK connects lazily and yields nothing until an event arrives,
-        // so this announces the attempt; a refusal surfaces as a warning below.
-        this.log.info("Live updates: listening on the Nimbio event stream");
+        if (this.streamFailures === 0) this.log.info("Live updates: listening on the Nimbio event stream");
+        else this.log.debug("Retrying the Nimbio event stream");
         for await (const msg of this.client.community.streamEvents({ events: STREAM_EVENTS, reconnect: true, signal })) {
-          this.stopPolling();
+          this.markStreamHealthy();
           if (msg.kind === "reset") {
             this.log.debug(`Event stream reset (${msg.reason ?? "no reason"}); re-reading status`);
             await this.seed();
@@ -111,17 +133,32 @@ export class LiveUpdater {
           this.log.error(`Event stream refused — ${describeError(e)}. Live updates stopped.`);
           return;
         }
+        this.streamFailures += 1;
         const hint = isStreamLimit(e)
           ? " This key already has 3 live streams open (Home Assistant or another Homebridge?) — give each its own key."
           : "";
-        this.log.warn(
-          `Event stream unavailable — ${describeError(e)}.${hint} Polling every ${this.opts.pollSeconds}s meanwhile.`,
-        );
+        const msg = `Event stream unavailable — ${describeError(e)}.${hint} Polling every ${this.opts.pollSeconds}s meanwhile.`;
+        // Warn once per outage; a permanent refusal must not log forever.
+        if (this.streamFailures === 1) this.log.warn(msg);
+        else this.log.debug(msg);
+      } finally {
+        clearTimeout(healthy);
       }
       if (this.stopped) return;
       this.startPolling();
-      await sleep(this.opts.streamRetryMs ?? 60_000, signal);
+      // Back off on repeated refusals: 1x, 2x, 4x … the base delay, capped.
+      const base = this.opts.streamRetryMs ?? 60_000;
+      const delay = Math.min(base * 2 ** Math.max(0, this.streamFailures - 1), MAX_STREAM_RETRY_MS);
+      await sleep(delay, signal);
       await this.seed();
+    }
+  }
+
+  private markStreamHealthy(): void {
+    this.stopPolling();
+    if (this.streamFailures > 0) {
+      this.log.info("Live updates: event stream reconnected");
+      this.streamFailures = 0;
     }
   }
 

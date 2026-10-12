@@ -1,5 +1,6 @@
 import type { CharacteristicValue, PlatformAccessory, Service } from "homebridge";
 import { type AccessoryHandler, type PluginContext, setAccessoryInfo } from "../context.js";
+import { statusIsClosed, statusIsProblem } from "../classify.js";
 import { DOOR, type DoorReading, TARGET, doorReadingFor } from "../doorState.js";
 import type { GateSpec } from "../inventory.js";
 
@@ -97,9 +98,10 @@ export class GateAccessory implements AccessoryHandler {
     try {
       await this.ctx.opener.open(this.gate);
       if (this.sensed) {
-        // Status events drive the reading from here. If none arrives, fall back
-        // to the last real reading rather than sitting in Opening forever.
-        this.timer = setTimeout(() => this.settleFromStatus(), SENSED_SETTLE_MS);
+        // Status events drive the reading from here. Only wait if it is still
+        // in motion: a settled event may already have arrived while the box
+        // was confirming the open.
+        if (this.inMotion()) this.armSettle();
       } else {
         this.set({ current: DOOR.OPEN, target: TARGET.OPEN });
         this.timer = setTimeout(() => this.set({ current: DOOR.CLOSED, target: TARGET.CLOSED }), resetMs);
@@ -109,6 +111,7 @@ export class GateAccessory implements AccessoryHandler {
       this.service
         .getCharacteristic(this.ctx.api.hap.Characteristic.CurrentDoorState)
         .updateValue(new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE));
+      clearTimeout(this.timer);
       this.timer = setTimeout(() => this.settleFromStatus(), resetMs);
     } finally {
       this.busy = false;
@@ -122,14 +125,35 @@ export class GateAccessory implements AccessoryHandler {
       this.ctx.log.debug(`${this.gate.name}: status "${status ?? "none"}" is not a position; keeping last reading`);
       return;
     }
-    // A settled reading ends any wait started by an open.
-    if (next.current === DOOR.OPEN || next.current === DOOR.CLOSED) clearTimeout(this.timer);
     this.set(next);
+    // In motion: wait for the settled status, but not forever (the final event
+    // can be lost to a stream drop). Settled: end any such wait.
+    if (this.inMotion()) this.armSettle();
+    else clearTimeout(this.timer);
   }
 
+  private inMotion(): boolean {
+    return this.reading.current === DOOR.OPENING || this.reading.current === DOOR.CLOSING;
+  }
+
+  private armSettle(): void {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.settleFromStatus(), SENSED_SETTLE_MS);
+  }
+
+  /**
+   * Fall back to a *settled* reading. Open only if the last real status says
+   * open; anything else — Moving, Malfunction, Unknown — rests at Closed, so the
+   * tile can never be left in Opening/Closing with nothing to move it on.
+   */
   private settleFromStatus(): void {
-    const next = this.sensed ? doorReadingFor(this.lastStatus, { ...this.reading, current: DOOR.CLOSED }) : null;
-    this.set(next ?? { current: DOOR.CLOSED, target: TARGET.CLOSED });
+    const status = this.sensed ? this.lastStatus : null;
+    const open = statusIsClosed(status) === false;
+    this.set({
+      current: open ? DOOR.OPEN : DOOR.CLOSED,
+      target: open ? TARGET.OPEN : TARGET.CLOSED,
+      obstructed: statusIsProblem(status),
+    });
   }
 
   private set(patch: Partial<DoorReading>): void {

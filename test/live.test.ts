@@ -2,7 +2,7 @@ import { AuthenticationError, RateLimitError } from "@nimbio/community-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiveUpdater, STREAM_EVENTS } from "../src/live.js";
 import { StateStore } from "../src/state.js";
-import { flush, latch, makeLog, makeStream } from "./helpers.js";
+import { flush, latch, makeLog, makeStream, streamEvent } from "./helpers.js";
 
 function setup(opts: Partial<ConstructorParameters<typeof LiveUpdater>[3]> = {}) {
   const stream = makeStream();
@@ -32,12 +32,12 @@ describe("LiveUpdater", () => {
     expect(store.get("L1")?.status).toBe("Closed");
     expect(stream.calls[0]?.events).toEqual(STREAM_EVENTS);
 
-    stream.push({ kind: "event", id: "1", type: "sense_line.changed", data: { latch_id: "L1", status_label: "Open" }, payload: {} });
+    stream.push(streamEvent("sense_line.changed", { latch_id: "L1", status_label: "Open" }));
     await flush();
     expect(store.get("L1")?.status).toBe("Open");
 
     const before = client.community.gateStatus.mock.calls.length;
-    stream.push({ kind: "event", id: "2", type: "device.offline", data: {}, payload: {} });
+    stream.push(streamEvent("device.offline", { box_id: "b1" }, "2"));
     await flush();
     stream.push({ kind: "reset", reason: "cursor_expired" });
     await flush();

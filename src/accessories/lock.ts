@@ -51,6 +51,7 @@ export class LockAccessory implements AccessoryHandler {
     if (value === LOCK.UNSECURED) {
       if (this.busy) return;
       this.busy = true;
+      clearTimeout(this.timer);
       this.target = LOCK.UNSECURED;
       void this.runOpen();
       return;
@@ -69,6 +70,7 @@ export class LockAccessory implements AccessoryHandler {
       this.service
         .getCharacteristic(Characteristic.LockCurrentState)
         .updateValue(new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE));
+      clearTimeout(this.timer);
       this.timer = setTimeout(() => this.snapTarget(), this.ctx.config.momentaryResetSeconds * 1000);
     } finally {
       this.busy = false;

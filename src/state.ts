@@ -65,7 +65,9 @@ export class StateStore {
   }
 
   applyEvent(ev: StreamEvent): ApplyResult {
-    const data = ev.data ?? {};
+    // `ev.data` is the whole webhook envelope ({event, id, occurred_at, data});
+    // the event's own fields are in `ev.payload`, which the SDK lifts out of it.
+    const data = ev.payload ?? {};
     const latchId = typeof data.latch_id === "string" ? data.latch_id : null;
 
     if (ev.type === "sense_line.changed" && latchId) {

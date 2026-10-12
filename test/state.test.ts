@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { StateStore } from "../src/state.js";
 import { DOOR, LOCK, TARGET, doorReadingFor, lockStateFor } from "../src/doorState.js";
 import { excludeLatches, managerInventory, managerInventoryWithoutStatus, memberInventory } from "../src/inventory.js";
-import { latch } from "./helpers.js";
+import { latch, streamEvent } from "./helpers.js";
 
-const ev = (type: string, data: Record<string, unknown>) => ({ kind: "event" as const, id: "1", type, data, payload: {} });
+const ev = (type: string, payload: Record<string, unknown>) => streamEvent(type, payload);
 
 describe("StateStore", () => {
   it("seeds, applies events, and notifies subscribers", () => {
