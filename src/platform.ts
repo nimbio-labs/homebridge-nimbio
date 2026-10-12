@@ -25,6 +25,7 @@ import { Opener } from "./opener.js";
 import { type Session, describeSession, resolveSession } from "./session.js";
 import { PLATFORM_NAME, PLUGIN_NAME } from "./settings.js";
 import { StateStore } from "./state.js";
+import { StreamProbe } from "./streamProbe.js";
 import { VERSION } from "./version.js";
 
 /** Seams for tests. Homebridge itself only ever passes the first three arguments. */
@@ -52,6 +53,8 @@ interface Wanted {
  */
 export class NimbioPlatform implements DynamicPlatformPlugin {
   private readonly cached = new Map<string, PlatformAccessory>();
+  /** Characteristics carrying the "No Response" stub, per accessory UUID. */
+  private readonly stubbed = new Map<string, Array<{ removeOnGet(): unknown; removeOnSet(): unknown }>>();
   private readonly handlers: AccessoryHandler[] = [];
   private readonly config: NimbioConfig | null;
   private live: LiveUpdater | undefined;
@@ -74,20 +77,27 @@ export class NimbioPlatform implements DynamicPlatformPlugin {
     api.on("shutdown", () => this.stop());
   }
 
+  /**
+   * Homebridge hands back accessories cached from earlier runs. Until a confirmed
+   * key attaches real handlers they must not look usable — with no handlers
+   * HomeKit would accept "open" and silently do nothing — so each one reports
+   * "No Response" from the moment it is restored. That also covers a plugin left
+   * unconfigured and a rejected key, where real handlers never arrive.
+   */
   configureAccessory(accessory: PlatformAccessory): void {
     this.cached.set(accessory.UUID, accessory);
+    this.markUnavailable(accessory);
   }
 
   async start(): Promise<void> {
     const config = this.config;
     if (!config || this.stopped) return;
     this.log.info(`Nimbio plugin ${VERSION} starting (${config.environment})`);
-    // Until the key is confirmed, cached tiles must not look usable: with no
-    // handlers HomeKit would accept "open" and silently do nothing.
-    this.markCachedUnavailable();
 
+    const probe = new StreamProbe();
     const client = (this.deps.createClient ?? ((k, o) => new NimbioClient(k, o)))(config.apiKey, {
       environment: config.environment,
+      fetch: probe.wrap(),
       // Open-surface attribution via the long-standing option, not the SDK's newer `integration`.
       defaultHeaders: { "X-Nimbio-Integration": `homebridge/${VERSION}` },
     });
@@ -134,31 +144,39 @@ export class NimbioPlatform implements DynamicPlatformPlugin {
         pollSeconds: config.pollSeconds,
         gateStatus: session.gateStatus,
         holdOpens,
+        probe,
       });
       // loadInventory already read (and seeded) gate status when it could.
       await this.live.start({ gateStatusSeeded: session.gateStatus });
     }
   }
 
-  /**
-   * Make every cached accessory report "No Response" for reads and writes.
-   * Real handlers, attached once the key is confirmed, replace these.
-   */
-  private markCachedUnavailable(): void {
-    const { Service, HapStatusError, HAPStatus } = this.api.hap;
+  /** Stub every characteristic of the accessory to report "No Response". */
+  private markUnavailable(accessory: PlatformAccessory): void {
+    const { Service, Characteristic, HapStatusError, HAPStatus } = this.api.hap;
     const fail = () => {
       throw new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
     };
-    for (const accessory of this.cached.values()) {
-      for (const service of accessory.services) {
-        if (service instanceof Service.AccessoryInformation) continue;
-        for (const ch of service.characteristics) {
-          if (ch.UUID === this.api.hap.Characteristic.Name.UUID) continue;
-          ch.onGet(fail);
-          ch.onSet(fail);
-        }
+    const chars: Array<{ removeOnGet(): unknown; removeOnSet(): unknown }> = [];
+    for (const service of accessory.services) {
+      if (service instanceof Service.AccessoryInformation) continue;
+      for (const ch of service.characteristics) {
+        if (ch.UUID === Characteristic.Name.UUID) continue;
+        ch.onGet(fail);
+        ch.onSet(fail);
+        chars.push(ch);
       }
     }
+    this.stubbed.set(accessory.UUID, chars);
+  }
+
+  /** Remove the stubs so the real handler starts from a clean slate. */
+  private clearUnavailable(accessory: PlatformAccessory): void {
+    for (const ch of this.stubbed.get(accessory.UUID) ?? []) {
+      ch.removeOnGet();
+      ch.removeOnSet();
+    }
+    this.stubbed.delete(accessory.UUID);
   }
 
   stop(): void {
@@ -222,6 +240,7 @@ export class NimbioPlatform implements DynamicPlatformPlugin {
         fresh.push(accessory);
       }
       accessory.context = { latchId: w.gate.latchId, role: w.role } satisfies AccessoryContext;
+      this.clearUnavailable(accessory);
       this.handlers.push(this.makeHandler(ctx, accessory, w));
     }
 
@@ -232,7 +251,10 @@ export class NimbioPlatform implements DynamicPlatformPlugin {
     if (stale.length) {
       this.log.info(`Removing ${stale.length} accessory(ies) no longer available to this key`);
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
-      for (const a of stale) this.cached.delete(a.UUID);
+      for (const a of stale) {
+        this.cached.delete(a.UUID);
+        this.stubbed.delete(a.UUID);
+      }
     }
   }
 

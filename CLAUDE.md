@@ -38,10 +38,21 @@ is a port of HA's `const.py` and `test/classify.test.ts` copies HA's
 - `src/live.ts` — SSE stream → state store, polling fallback, safety re-sync.
 - `src/state.ts`, `src/doorState.ts` — pure state + HAP value mapping.
 - `src/opener.ts` — the only open path (idempotency key + access-log note).
+- `src/streamProbe.ts` — a pass-through wrapper on the SDK's `fetch` option
+  that reports the event stream's HTTP 200. **A deliberate, documented
+  stopgap**: `streamEvents()` yields nothing until an event arrives and retries
+  connection failures silently, so it has no other honest "connected" signal
+  (elapsed-time guessing was tried and was wrong both ways). Delete it once the
+  SDK exposes an on-connect message/hook (nimbioCore follow-up).
 
-Invariants: reads never throw (an offline box must not turn a gate into
-"No Response"); unknown statuses never become a fake open/closed; logs carry
-named fields only — never payloads or the API key.
+Invariants: reads never throw while the plugin is running (an offline box must
+not turn a gate into "No Response") — but cached tiles *do* report No Response
+until a confirmed key attaches real handlers; unknown statuses never become a
+fake open/closed (fallbacks return to the last *real* position); a status read
+never overwrites a latch an event updated after the read began; logs carry
+named fields only — never payloads or the API key. Each of these has a
+regression test (`test/review-fixes.test.ts`, `test/second-pass.test.ts`,
+`test/logging.test.ts`, `test/hygiene.test.ts`).
 
 ## Commands
 

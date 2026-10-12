@@ -32,6 +32,8 @@ export class GateAccessory implements AccessoryHandler {
   private readonly service: Service;
   private reading: DoorReading = { current: DOOR.CLOSED, target: TARGET.CLOSED, obstructed: false };
   private lastStatus: string | null = null;
+  /** The last *real* position (Open or Closed) the status reported. */
+  private lastSettled: DoorReading = { current: DOOR.CLOSED, target: TARGET.CLOSED, obstructed: false };
   private busy = false;
   private timer: NodeJS.Timeout | undefined;
   private readonly unsubscribe: (() => void) | undefined;
@@ -126,6 +128,7 @@ export class GateAccessory implements AccessoryHandler {
       return;
     }
     this.set(next);
+    if (next.current === DOOR.OPEN || next.current === DOOR.CLOSED) this.lastSettled = { ...next };
     // In motion: wait for the settled status, but not forever (the final event
     // can be lost to a stream drop). Settled: end any such wait.
     if (this.inMotion()) this.armSettle();
@@ -142,18 +145,24 @@ export class GateAccessory implements AccessoryHandler {
   }
 
   /**
-   * Fall back to a *settled* reading. Open only if the last real status says
-   * open; anything else — Moving, Malfunction, Unknown — rests at Closed, so the
-   * tile can never be left in Opening/Closing with nothing to move it on.
+   * Fall back to a *settled* reading, never Opening/Closing. A sensed gate takes
+   * the position its last status names; if that status names none (Moving,
+   * Malfunction, Unknown, Upgrading…) it returns to the last *real* position —
+   * never an invented one. A momentary gate rests at Closed.
    */
   private settleFromStatus(): void {
-    const status = this.sensed ? this.lastStatus : null;
-    const open = statusIsClosed(status) === false;
-    this.set({
-      current: open ? DOOR.OPEN : DOOR.CLOSED,
-      target: open ? TARGET.OPEN : TARGET.CLOSED,
-      obstructed: statusIsProblem(status),
-    });
+    if (!this.sensed) {
+      this.set({ current: DOOR.CLOSED, target: TARGET.CLOSED });
+      return;
+    }
+    const closed = statusIsClosed(this.lastStatus);
+    const base =
+      closed === null
+        ? this.lastSettled
+        : closed
+          ? { current: DOOR.CLOSED, target: TARGET.CLOSED }
+          : { current: DOOR.OPEN, target: TARGET.OPEN };
+    this.set({ current: base.current, target: base.target, obstructed: statusIsProblem(this.lastStatus) });
   }
 
   private set(patch: Partial<DoorReading>): void {

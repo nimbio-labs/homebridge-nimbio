@@ -12,6 +12,7 @@ import { Opener } from "../src/opener.js";
 import { NimbioPlatform } from "../src/platform.js";
 import { PLATFORM_NAME } from "../src/settings.js";
 import { StateStore } from "../src/state.js";
+import { StreamProbe } from "../src/streamProbe.js";
 import {
   FakeAccessory, flush, latch, makeApi, makeConfig, makeLog, makeStream, me, openResult, streamEvent,
 } from "./helpers.js";
@@ -132,7 +133,8 @@ describe("sensed gate settling", () => {
     emit("Moving");
     expect(svc.getCharacteristic(C.CurrentDoorState).value).toBe(DOOR.CLOSING);
     vi.advanceTimersByTime(SENSED_SETTLE_MS); // final "Closed" lost
-    expect(svc.getCharacteristic(C.CurrentDoorState).value).toBe(DOOR.CLOSED);
+    // Back to the last real position (Open) — never Opening, never invented.
+    expect(svc.getCharacteristic(C.CurrentDoorState).value).toBe(DOOR.OPEN);
     h.dispose();
   });
 });
@@ -191,19 +193,20 @@ describe("live updater", () => {
     live.stop();
   });
 
-  it("#5 polling stops once a reconnected stream holds, even with no events", async () => {
+  it("#5 polling stops once a reconnected stream gets its 200, even with no events", async () => {
     fakeTimers();
     const stream = makeStream();
+    const probe = new StreamProbe();
     const gateStatus = vi.fn().mockResolvedValue(status());
     const client = { community: { gateStatus, holdOpens: vi.fn(), streamEvents: stream.streamEvents } };
     const log = makeLog();
     const live = new LiveUpdater(client as never, new StateStore(), log, {
-      liveUpdates: "stream", pollSeconds: 30, gateStatus: true, holdOpens: false,
-      streamRetryMs: 1000, streamHealthyMs: 500,
+      liveUpdates: "stream", pollSeconds: 30, gateStatus: true, holdOpens: false, streamRetryMs: 1000, probe,
     });
     await live.start();
     stream.fail(new Error("refused"));
-    await vi.advanceTimersByTimeAsync(1000 + 500); // retry, then the attempt holds
+    await vi.advanceTimersByTimeAsync(1000); // retry
+    await probe.wrap(async () => new Response(null, { status: 200 }))("https://api.nimbio.dev/v1/events/stream?events=x");
     expect(log.info).toHaveBeenCalledWith("Live updates: event stream reconnected");
     const after = gateStatus.mock.calls.length;
     await vi.advanceTimersByTimeAsync(5 * 60_000); // no events, well under the 15-min safety resync
@@ -283,10 +286,13 @@ describe("platform lifecycle", () => {
   it("#3 shutdown during a failed start schedules no retry", async () => {
     let reject!: (e: unknown) => void;
     const c = client(() => new Promise((_, r) => { reject = r; }));
-    const { api } = boot(c);
+    const { api, platform } = boot(c);
     api.emit("didFinishLaunching");
     api.emit("shutdown");
     reject(new Error("network"));
+    await flush();
+    // No retry may even be scheduled once shutdown has run.
+    expect((platform as unknown as { retryTimer?: unknown }).retryTimer).toBeUndefined();
     await new Promise((r) => setTimeout(r, 30));
     expect(c.me).toHaveBeenCalledTimes(1);
   });

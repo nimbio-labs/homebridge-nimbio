@@ -3,6 +3,7 @@ import type { Logging } from "homebridge";
 import type { LiveUpdates } from "./config.js";
 import { describeError, isStreamLimit } from "./errors.js";
 import type { StateStore } from "./state.js";
+import type { StreamProbe } from "./streamProbe.js";
 
 /** The events the plugin renders. The stream and webhooks share this vocabulary. */
 export const STREAM_EVENTS = [
@@ -22,11 +23,11 @@ export interface LiveOptions {
   /** Full re-read cadence while the stream is healthy — a safety net, not the feed. */
   safetyResyncMs?: number;
   /**
-   * A stream attempt that has not failed after this long is treated as
-   * connected (the SDK yields nothing until an event arrives, so there is no
-   * explicit on-connect signal). Polling stops then.
+   * Reports the stream's HTTP 200 — the only reliable "connected" signal, since
+   * the SDK yields nothing until an event arrives. Without one, the stream
+   * counts as healthy only once a message arrives.
    */
-  streamHealthyMs?: number;
+  probe?: StreamProbe;
 }
 
 /** Ceiling for the stream retry backoff after repeated refusals. */
@@ -56,13 +57,17 @@ export class LiveUpdater {
   /** Consecutive stream attempts that failed; 0 while the stream is healthy. */
   private streamFailures = 0;
   private stopped = false;
+  /** The read in flight, shared by callers — status reads never overlap. */
+  private seeding: Promise<boolean> | undefined;
 
   constructor(
     private readonly client: NimbioClient,
     private readonly store: StateStore,
     private readonly log: Logging,
     private readonly opts: LiveOptions,
-  ) {}
+  ) {
+    opts.probe?.onOpen(() => this.markStreamHealthy());
+  }
 
   /**
    * Seed, then start the feed. Pass `gateStatusSeeded` when the caller has just
@@ -88,13 +93,23 @@ export class LiveUpdater {
     clearInterval(this.safetyTimer);
   }
 
-  /** Re-read everything this key can see. Never throws. */
-  async seed(parts: { gateStatus?: boolean } = {}): Promise<boolean> {
+  /**
+   * Re-read everything this key can see. Never throws. Concurrent callers
+   * share one read, and a read never overwrites a latch that a live event
+   * updated after the read began (see {@link StateStore.mark}).
+   */
+  seed(parts: { gateStatus?: boolean } = {}): Promise<boolean> {
+    this.seeding ??= this.read(parts).finally(() => { this.seeding = undefined; });
+    return this.seeding;
+  }
+
+  private async read(parts: { gateStatus?: boolean }): Promise<boolean> {
+    const since = this.store.mark();
     try {
       if (this.opts.gateStatus && parts.gateStatus !== false) {
-        this.store.seedGateStatus(await this.client.community.gateStatus());
+        this.store.seedGateStatus(await this.client.community.gateStatus(), since);
       }
-      if (this.opts.holdOpens) this.store.seedHoldOpens(await this.client.community.holdOpens());
+      if (this.opts.holdOpens) this.store.seedHoldOpens(await this.client.community.holdOpens(), since);
       if (this.failures > 0) this.log.info("Nimbio status reads recovered");
       this.failures = 0;
       return true;
@@ -111,10 +126,6 @@ export class LiveUpdater {
   private async runStream(): Promise<void> {
     const signal = this.abort.signal;
     while (!this.stopped) {
-      // The SDK connects lazily and yields nothing until an event arrives, so an
-      // attempt that survives `streamHealthyMs` without an HTTP refusal counts
-      // as connected: stop the fallback polling and end any outage.
-      const healthy = setTimeout(() => this.markStreamHealthy(), this.opts.streamHealthyMs ?? 15_000);
       try {
         if (this.streamFailures === 0) this.log.info("Live updates: listening on the Nimbio event stream");
         else this.log.debug("Retrying the Nimbio event stream");
@@ -141,8 +152,6 @@ export class LiveUpdater {
         // Warn once per outage; a permanent refusal must not log forever.
         if (this.streamFailures === 1) this.log.warn(msg);
         else this.log.debug(msg);
-      } finally {
-        clearTimeout(healthy);
       }
       if (this.stopped) return;
       this.startPolling();
@@ -150,11 +159,14 @@ export class LiveUpdater {
       const base = this.opts.streamRetryMs ?? 60_000;
       const delay = Math.min(base * 2 ** Math.max(0, this.streamFailures - 1), MAX_STREAM_RETRY_MS);
       await sleep(delay, signal);
+      // Catch up on what the outage hid (shares a read with the poll timer).
       await this.seed();
     }
   }
 
+  /** Connected for real (HTTP 200 seen, or a message arrived). */
   private markStreamHealthy(): void {
+    if (this.stopped) return;
     this.stopPolling();
     if (this.streamFailures > 0) {
       this.log.info("Live updates: event stream reconnected");
