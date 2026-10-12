@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Homebridge's supported LTS lines; must match package.json engines.node.
+        node-version: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      # npm 10 crashes resolving vite 8's optional devtools peer chain when a
+      # dependency is added; pin the npm the lockfile was made with.
+      - name: Upgrade npm
+        run: npm install -g npm@11.19.1
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - name: Package contents
+        run: npm pack --dry-run

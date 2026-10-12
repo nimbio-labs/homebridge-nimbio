@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+*.tgz
+# Local Homebridge storage used by scripts/dev-smoke.sh — holds the API key.
+.hb-dev/
+
+# Claude Code: per-machine / per-session state.
+.claude/settings.local.json
+.claude/plans/
+.claude/memory/
+.claude/worktrees/
+.claude/*.lock

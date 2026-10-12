@@ -1,0 +1,86 @@
+{
+  "pluginAlias": "NimbioGates",
+  "pluginType": "platform",
+  "singular": false,
+  "strictValidation": false,
+  "headerDisplay": "Open your Nimbio gates from Apple Home, Siri and CarPlay.\n\n**Which key?** A personal API key (create one at [api.nimbio.com/manage](https://api.nimbio.com/manage)) gives open-only gates. A **community API key** from the Nimbio admin portal also gives live gate status and hold-open switches — the plugin detects which you pasted.",
+  "footerDisplay": "Running Home Assistant on the same key too? Give each its own key — a key allows 3 live connections.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Nimbio",
+        "required": true
+      },
+      "apiKey": {
+        "title": "Nimbio API Key",
+        "type": "string",
+        "required": true,
+        "placeholder": "nimbio_live_…",
+        "description": "Treat it like a gate remote: anyone with it can open your gates."
+      },
+      "environment": {
+        "title": "Environment",
+        "type": "string",
+        "default": "prod",
+        "oneOf": [
+          { "title": "Production", "enum": ["prod"] },
+          { "title": "Development (Nimbio staff)", "enum": ["dev"] }
+        ]
+      },
+      "momentaryResetSeconds": {
+        "title": "Seconds until an opened gate shows Closed again",
+        "type": "integer",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 300,
+        "description": "For gates without a status sensor, Home shows Open for this long after a successful open."
+      },
+      "holdOpenSwitches": {
+        "title": "Show hold-open switches (community keys)",
+        "type": "boolean",
+        "default": true
+      },
+      "liveUpdates": {
+        "title": "Live status updates (community keys)",
+        "type": "string",
+        "default": "stream",
+        "oneOf": [
+          { "title": "Event stream (recommended)", "enum": ["stream"] },
+          { "title": "Polling", "enum": ["polling"] }
+        ]
+      },
+      "pollSeconds": {
+        "title": "Polling interval (seconds)",
+        "type": "integer",
+        "default": 60,
+        "minimum": 30,
+        "maximum": 3600
+      },
+      "excludeLatchIds": {
+        "title": "Hide these gates (latch IDs)",
+        "type": "array",
+        "items": { "type": "string", "title": "Latch ID" }
+      }
+    }
+  },
+  "layout": [
+    "name",
+    "apiKey",
+    "momentaryResetSeconds",
+    {
+      "type": "fieldset",
+      "title": "Community manager options",
+      "expandable": true,
+      "items": ["holdOpenSwitches", "liveUpdates", "pollSeconds"]
+    },
+    {
+      "type": "fieldset",
+      "title": "Advanced",
+      "expandable": true,
+      "items": ["environment", { "key": "excludeLatchIds", "type": "array", "items": ["excludeLatchIds[]"] }]
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "name": "@nimbio/homebridge-nimbio",
+  "displayName": "Nimbio",
+  "version": "0.1.0",
+  "description": "Official Homebridge plugin for Nimbio gates — open from Apple Home, Siri and CarPlay; community managers also get live gate status and hold-opens.",
+  "license": "MIT",
+  "author": "Nimbio",
+  "homepage": "https://github.com/nimbio-labs/homebridge-nimbio#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nimbio-labs/homebridge-nimbio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nimbio-labs/homebridge-nimbio/issues"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": {
+    "node": "^22.10.0 || ^24.0.0",
+    "homebridge": "^1.8.0 || ^2.0.0"
+  },
+  "files": [
+    "dist",
+    "config.schema.json",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rimraf dist && tsc -p tsconfig.build.json",
+    "clean": "rimraf dist coverage",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "version:check": "node scripts/check-version.mjs",
+    "check": "npm run version:check && npm run lint && npm run typecheck && npm run coverage",
+    "prepublishOnly": "npm run check && npm run build"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "nimbio",
+    "gate",
+    "garage-door",
+    "homekit"
+  ],
+  "dependencies": {
+    "@nimbio/community-api": "^0.7.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@homebridge/hap-nodejs": "^2.2.2",
+    "@types/node": "^22.7.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "eslint": "^9.39.5",
+    "homebridge": "^2.4.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  }
+}
